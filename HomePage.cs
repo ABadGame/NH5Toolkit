@@ -269,8 +269,9 @@ namespace NH5Toolkit
 
         private Panel BuildCard(ToolInfo tool)
         {
-            bool configured = ToolkitConfig.GetPath(tool.Key) is not null;
-            bool downloadable = ToolDownloader.IsAvailable(tool);
+            // Built-in sections (the Mod Manager) are always ready: "Open" just shows their page.
+            bool configured = tool.BuiltIn || ToolkitConfig.GetPath(tool.Key) is not null;
+            bool downloadable = !tool.BuiltIn && ToolDownloader.IsAvailable(tool);
 
             var card = new Panel
             {
@@ -294,8 +295,8 @@ namespace NH5Toolkit
 
             var status = new Label
             {
-                Text = configured
-                    ? "Ready to launch"
+                Text = tool.BuiltIn ? "Built into the toolkit"
+                    : configured ? "Ready to launch"
                     : downloadable ? "One-click download available" : "Not set up yet",
                 Font = new Font("Segoe UI", 9f),
                 ForeColor = configured ? Theme.Ok : Theme.Muted,
@@ -316,7 +317,7 @@ namespace NH5Toolkit
 
             var launch = new Button
             {
-                Text = configured ? "Launch" : downloadable ? "Download" : "Launch",
+                Text = tool.BuiltIn ? "Open" : configured ? "Launch" : downloadable ? "Download" : "Launch",
                 Size = new Size(96, 30),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Theme.Accent,
@@ -329,7 +330,11 @@ namespace NH5Toolkit
 
             launch.Click += (s, e) =>
             {
-                if (configured)
+                if (tool.BuiltIn)
+                {
+                    _navigate(tool.Key);
+                }
+                else if (configured)
                 {
                     Launcher.TryLaunch(tool);
                 }

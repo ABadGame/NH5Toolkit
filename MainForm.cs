@@ -108,6 +108,7 @@ namespace NH5Toolkit
                 Cursor = Cursors.Hand
             };
             button.FlatAppearance.BorderSize = 0;
+            button.TabStop = false;   // no white focus box around a nav item (seen after a dialog closed)
 
             button.Click += (s, e) => Navigate(key);
 
@@ -132,9 +133,12 @@ namespace NH5Toolkit
         /// </summary>
         public void Navigate(string key)
         {
-            UserControl page = key == "home"
-                ? new HomePage(Navigate)
-                : new ToolPage(Tools.ByKey(key), Navigate);
+            UserControl page = key switch
+            {
+                "home" => new HomePage(Navigate),
+                "modManager" => new ModManagerPage(),
+                _ => new ToolPage(Tools.ByKey(key), Navigate)
+            };
 
             var oldPages = _content.Controls.Cast<Control>().ToArray();
             _content.Controls.Clear();

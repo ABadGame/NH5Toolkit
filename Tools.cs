@@ -21,6 +21,12 @@ namespace NH5Toolkit
         /// and release notes are fetched automatically.
         /// </summary>
         public string? GitHubRepo { get; init; }
+
+        /// <summary>
+        /// True for sections that live inside the toolkit itself (no separate .exe to
+        /// download or launch). Their sidebar entry and home card open a built-in page.
+        /// </summary>
+        public bool BuiltIn { get; init; }
     }
 
     public static class Tools
@@ -39,10 +45,10 @@ namespace NH5Toolkit
         public static readonly ToolInfo ModManager = new(
             Key: "modManager",
             Name: "Mod Manager",
-            Description: "Install, remove and manage mods, including the in-game QoL settings.")
+            Description: "Install, remove and manage mods: file replacements and add-ons, side by side.")
         {
-            // TODO: Paste the real download link when your friend's update is published.
-            DownloadUrl = "https://REPLACE-ME.example.com/NH5ModManager.zip"
+            // Built into the toolkit (ModManagerPage), not a separate download.
+            BuiltIn = true
         };
 
         public static readonly ToolInfo ModStudio = new(

@@ -8,10 +8,16 @@ namespace NH5Toolkit
     /// </summary>
     public static class ToolkitConfig
     {
+        // NH5TK_DATA_DIR points the toolkit at another data folder (tests use it so they never touch the real one).
         private static readonly string ConfigDir =
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NH5Toolkit");
+            Environment.GetEnvironmentVariable("NH5TK_DATA_DIR") is { Length: > 0 } testDir
+                ? testDir
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NH5Toolkit");
 
         private static readonly string ConfigPath = Path.Combine(ConfigDir, "config.json");
+
+        /// <summary>%APPDATA%\NH5Toolkit, where the hub keeps its own files (config, scan report, hash cache).</summary>
+        public static string Dir => ConfigDir;
 
         private static readonly Dictionary<string, string> _paths = new();
 
