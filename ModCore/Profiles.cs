@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace NH5Toolkit.ModCore
 {
@@ -12,6 +13,22 @@ namespace NH5Toolkit.ModCore
         /// <summary>Ids of the mods that are on, highest priority first.</summary>
         public List<string> On { get; set; } = new();
         public bool Multiplayer { get; set; }
+        /// <summary>
+        /// 2026-11-16 (user: "i cant edit the individual files in the profiles"): files left out of a mod for this profile only,
+        /// mod id -> game-relative paths. Like the old manager's per-file ticks; the mod itself and other profiles keep them.
+        /// </summary>
+        public Dictionary<string, List<string>> Excluded { get; set; } = new();
+
+        public bool IsExcluded(string modId, string path) =>
+            Excluded.TryGetValue(modId, out var l) && l.Contains(path, StringComparer.OrdinalIgnoreCase);
+
+        public void SetExcluded(string modId, string path, bool excluded)
+        {
+            if (!Excluded.TryGetValue(modId, out var l)) Excluded[modId] = l = new();
+            l.RemoveAll(x => x.Equals(path, StringComparison.OrdinalIgnoreCase));
+            if (excluded) l.Add(path);
+            if (l.Count == 0) Excluded.Remove(modId);
+        }
     }
 
     /// <summary>%APPDATA%\NH5Toolkit\profiles.json: every profile, the one selected, and the one last deployed to the game.</summary>
@@ -57,6 +74,7 @@ namespace NH5Toolkit.ModCore
 
         public ModProfile? Find(string name) => Profiles.FirstOrDefault(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 
+        [JsonIgnore]
         public ModProfile Current => Find(Selected) ?? Profiles[0];
 
         public static string? CheckName(string name, ProfileStore store, string? except = null)
@@ -93,7 +111,33 @@ namespace NH5Toolkit.ModCore
 
         public void ForgetMod(string id)
         {
-            foreach (var p in Profiles) p.On.Remove(id);
+            foreach (var p in Profiles)
+            {
+                p.On.Remove(id);
+                p.Excluded.Remove(id);
+            }
+        }
+
+        /// <summary>
+        /// The library as this profile deploys it: mods with files left out (Excluded) are copies without those files. The real
+        /// library is never changed. Installer mods are always whole (their captured edits only fit together).
+        /// </summary>
+        public static ModLibrary Filtered(ModLibrary library, ModProfile profile)
+        {
+            if (profile.Excluded.Count == 0) return library;
+            var mods = new List<ModPackage>();
+            foreach (var m in library.Mods)
+            {
+                if (m.IsInstaller || !profile.Excluded.TryGetValue(m.Id, out var ex) || ex.Count == 0) { mods.Add(m); continue; }
+                var skip = new HashSet<string>(ex, StringComparer.OrdinalIgnoreCase);
+                mods.Add(new ModPackage
+                {
+                    Id = m.Id, Name = m.Name, Version = m.Version, Format = m.Format, Source = m.Source, Imported = m.Imported,
+                    Enabled = m.Enabled, Priority = m.Priority, Notes = m.Notes, Size = m.Size,
+                    Files = new Dictionary<string, string>(m.Files.Where(f => !skip.Contains(f.Key)), StringComparer.OrdinalIgnoreCase)
+                });
+            }
+            return new ModLibrary { Mods = mods };
         }
     }
 }

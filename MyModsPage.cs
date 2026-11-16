@@ -201,7 +201,7 @@ namespace NH5Toolkit
                 else if (e.KeyCode == Keys.Delete) { RemoveSelected(); e.Handled = true; }
             };
 
-            _rowMenu.Items.Add("Details...", null, (s, e) => ShowDetailsDialog());
+            _rowMenu.Items.Add("Files and details...", null, (s, e) => ShowDetailsDialog());
             _rowMenu.Items.Add("Switch on / off", null, (s, e) => ToggleSelected());
             _rowMenu.Items.Add(new ToolStripSeparator());
             _rowMenu.Items.Add("Move higher (wins shared files)", null, (s, e) => MoveSelected(-1));
@@ -313,6 +313,7 @@ namespace NH5Toolkit
             foreach (var m in _library.Mods.Where(m => m.Enabled))
                 foreach (var (path, sha) in m.Files)
                 {
+                    if (_profiles?.Current.IsExcluded(m.Id, path) == true) continue;
                     if (!byPath.TryGetValue(path, out var l)) byPath[path] = l = new();
                     l.Add((m, sha));
                 }
@@ -340,6 +341,8 @@ namespace NH5Toolkit
                     _ => "Adds and replaces game files"
                 };
             what += $"  ·  {ListStyle.FormatSize(m.Size)}";
+            int left = _profiles is null || m.IsInstaller ? 0 : m.Files.Keys.Count(k => _profiles.Current.IsExcluded(m.Id, k));
+            if (left > 0) what += $"  ·  {m.Files.Count - left} of {m.Files.Count} files in this profile";
             if (overlaps.TryGetValue(m, out var others))
                 what += $"  ·  ⚠ changes the same files as {string.Join(", ", others)}";
             return what;
@@ -389,13 +392,18 @@ namespace NH5Toolkit
             foreach (ToolStripItem i in _rowMenu.Items) i.Enabled = !_busy && m is not null;
         }
 
-        /// <summary>Everything the old details panel showed, in a window: where it came from, notes, every file.</summary>
+        /// <summary>
+        /// Where the mod came from, its notes and every file. 2026-11-16: each file has a tick for the selected profile (untick =
+        /// left out of this profile only, like the old manager's per-file ticks); a search box and tick / untick for what's shown.
+        /// </summary>
         private void ShowDetailsDialog()
         {
             if (Selected() is not { } m) return;
+            var prof = _profiles?.Current;
+            bool editable = prof is not null && !m.IsInstaller;
             using var f = new Form
             {
-                Text = m.Name, Size = new Size(820, 560), StartPosition = FormStartPosition.CenterParent,
+                Text = m.Name, Size = new Size(860, 600), StartPosition = FormStartPosition.CenterParent,
                 BackColor = Theme.WindowBack, ForeColor = Theme.NavText, MinimizeBox = false, ShowIcon = false, ShowInTaskbar = false
             };
             var notes = new List<string>
@@ -403,36 +411,118 @@ namespace NH5Toolkit
                 $"From {m.Source}  ·  added {m.Imported:yyyy-MM-dd}  ·  came as {m.Format}",
                 $"{m.Files.Count} files, {ListStyle.FormatSize(m.Size)}" + (m.IsInstaller ? "  ·  installer mod" : "")
             };
+            if (editable)
+                notes.Add($"Ticked files are used by the profile \"{prof!.Name}\". Untick a file to leave it out of this profile only " +
+                          "(other profiles and the mod keep it). Click Deploy afterwards.");
+            else if (m.IsInstaller)
+                notes.Add("An installer mod's files go in together, so they can't be ticked one by one.");
             if (m.IsInstaller && !m.Captured)
-                notes.Add("Not run yet. Switch it on and Apply: its installer opens, and the files it changes show up here.");
+                notes.Add("Not run yet. Switch it on and Deploy: its installer opens, and the files it changes show up here.");
             notes.AddRange(m.Notes);
             var head = new Label
             {
-                Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(16, 12, 16, 10), ForeColor = Theme.BodyText,
-                MaximumSize = new Size(780, 0), Text = string.Join(Environment.NewLine, notes.Select(n => "•  " + n))
+                Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(16, 12, 16, 8), ForeColor = Theme.BodyText,
+                MaximumSize = new Size(820, 0), Text = string.Join(Environment.NewLine, notes.Select(n => "•  " + n))
             };
-            var files = new ListView { Dock = DockStyle.Fill, MultiSelect = false };
+
+            var bar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(12, 4, 0, 0), WrapContents = false, BackColor = Theme.WindowBack };
+            var search = new TextBox { Width = 260, BackColor = Theme.CardBack, ForeColor = Theme.NavText, PlaceholderText = "Search files...", Margin = new Padding(4, 6, 8, 0) };
+            bar.Controls.Add(search);
+            var counter = new Label { AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(8, 9, 0, 0) };
+
+            var files = new ListView { Dock = DockStyle.Fill, MultiSelect = true, CheckBoxes = editable };
             files.Columns.Add("File in the game folder", 600);
             files.Columns.Add("Size", 90, HorizontalAlignment.Right);
             ListStyle.Apply(files, fillColumn: 0);
-            foreach (var (path, sha) in m.Files.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase))
+            if (editable)
             {
-                long size = FileStore.Has(sha) ? new FileInfo(FileStore.PathFor(sha)).Length : 0;
-                var item = new ListViewItem([path, ListStyle.FormatSize(size)]);
-                item.ForeColor = _stock?.IsStockPath(path) == true ? Theme.Accent : Theme.NavText;   // blue = replaces a stock file
-                files.Items.Add(item);
+                // ListStyle draws rows by hand: draw the tick box too
+                files.DrawSubItem += (s, e) =>
+                {
+                    if (e.ColumnIndex != 0 || e.Item is null) return;
+                    var box = new Rectangle(e.Bounds.Left + 4, e.Bounds.Top + (e.Bounds.Height - 13) / 2, 13, 13);
+                    CheckBoxRenderer.DrawCheckBox(e.Graphics, box.Location,
+                        e.Item.Checked ? System.Windows.Forms.VisualStyles.CheckBoxState.CheckedNormal : System.Windows.Forms.VisualStyles.CheckBoxState.UncheckedNormal);
+                };
             }
+            var all = m.Files.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase).ToList();
+            bool filling = false;
+            void Count() => counter.Text = editable
+                ? $"{all.Count(p => !prof!.IsExcluded(m.Id, p.Key))} of {all.Count} files in \"{prof!.Name}\""
+                : $"{all.Count} files";
+            void FillFiles()
+            {
+                filling = true;
+                files.BeginUpdate();
+                files.Items.Clear();
+                string q = search.Text.Trim();
+                foreach (var (path, sha) in all)
+                {
+                    if (q.Length > 0 && path.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    long size = FileStore.Has(sha) ? new FileInfo(FileStore.PathFor(sha)).Length : 0;
+                    var item = new ListViewItem([(editable ? "      " : "") + path, ListStyle.FormatSize(size)]) { Tag = path };
+                    item.ForeColor = _stock?.IsStockPath(path) == true ? Theme.Accent : Theme.NavText;   // blue = replaces a stock file
+                    if (editable)
+                    {
+                        item.Checked = !prof!.IsExcluded(m.Id, path);
+                        if (!item.Checked) item.ForeColor = Theme.Muted;
+                    }
+                    files.Items.Add(item);
+                }
+                files.EndUpdate();
+                filling = false;
+                Count();
+            }
+            bool changed = false;
+            if (editable)
+            {
+                void SetShown(bool on)
+                {
+                    foreach (ListViewItem it in files.Items) prof!.SetExcluded(m.Id, (string)it.Tag!, !on);
+                    changed = true;
+                    FillFiles();
+                }
+                bar.Controls.Add(Secondary("Tick shown", 96, () => { SetShown(true); return Task.CompletedTask; }));
+                bar.Controls.Add(Secondary("Untick shown", 106, () => { SetShown(false); return Task.CompletedTask; }));
+                files.ItemChecked += (s, e) =>
+                {
+                    if (filling || e.Item.Tag is not string path) return;
+                    prof!.SetExcluded(m.Id, path, !e.Item.Checked);
+                    e.Item.ForeColor = !e.Item.Checked ? Theme.Muted : _stock?.IsStockPath(path) == true ? Theme.Accent : Theme.NavText;
+                    changed = true;
+                    Count();
+                };
+                files.KeyDown += (s, e) =>
+                {
+                    if (e.KeyCode != Keys.Space || files.SelectedItems.Count < 2) return;   // Space on several rows: flip them together
+                    bool on = !files.SelectedItems[0].Checked;
+                    foreach (ListViewItem it in files.SelectedItems) it.Checked = on;
+                    e.Handled = true;
+                };
+            }
+            bar.Controls.Add(counter);
+            search.TextChanged += (s, e) => FillFiles();
+            FillFiles();
+
             var foot = new Label
             {
                 Dock = DockStyle.Bottom, Height = 26, Padding = new Padding(16, 4, 0, 0), ForeColor = Theme.Muted,
-                Text = "Blue = replaces a game file (the original is saved first). White = a new file."
+                Text = "Blue = replaces a game file (the original is saved first). White = a new file." + (editable ? " Grey = left out of this profile." : "")
             };
             var pad = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 0, 16, 0), BackColor = Theme.WindowBack };
             pad.Controls.Add(files);
             f.Controls.Add(pad);
             f.Controls.Add(foot);
+            f.Controls.Add(bar);
             f.Controls.Add(head);
             f.ShowDialog(this);
+
+            if (changed && _profiles is not null)
+            {
+                _profiles.Save();
+                Fill(m);
+                _ = RefreshPending();
+            }
         }
 
         /// <summary>Shows the Apply bar while the game doesn't match the list yet.</summary>
@@ -440,7 +530,7 @@ namespace NH5Toolkit
         {
             if (_gameDir is null || _stock is null) return;
             string game = _gameDir;
-            var lib = _library;
+            var lib = _profiles is null ? _library : ProfileStore.Filtered(_library, _profiles.Current);   // the profile's file ticks
             var stock = _stock;
             try
             {
@@ -562,6 +652,7 @@ namespace NH5Toolkit
             var lib = _library;
             var stock = _stock;
             if (_profiles is null) return;
+            lib = ProfileStore.Filtered(_library, _profiles.Current);   // the profile's file ticks
             string profileName = _profiles.Current.Name;
             bool mp = _profiles.Current.Multiplayer;
             SetBusy(true, "Checking what needs to change...");
@@ -1042,12 +1133,9 @@ namespace NH5Toolkit
                 var progress = new Progress<string>(t => _status.Text = t);
                 var ledger = await Task.Run(() => Ledger.Load(game));
                 var result = await Task.Run(() => OldManagerImport.Import(game, chosen, lib, profiles, ledger, progress, CancellationToken.None));
-                ProfileStore.ApplyToLibrary(profiles.Current, _library);
-                _library.Save();
-                SetBusy(false, $"Imported {result.Imported.Count} profiles from the old Mod Manager.");
-                FillProfiles();
-                Fill();
-                await RefreshPending();
+                SetBusy(false);
+                await Reload();   // everything again from disk: the list shows exactly what was saved
+                _status.Text = $"Imported {result.Imported.Count} profiles from the old Mod Manager.";
                 MessageBox.Show(this,
                     "Imported:\n• " + string.Join("\n• ", result.Imported) +
                     (result.Live is not null ? $"\n\n\"{result.Live}\" is the profile in the game; {result.Adopted.Count} files the old manager deployed were taken over." : "") +
