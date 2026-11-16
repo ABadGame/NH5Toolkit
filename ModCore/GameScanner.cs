@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace NH5Toolkit.ModCore
@@ -32,10 +32,40 @@ namespace NH5Toolkit.ModCore
     {
         public const string DefaultGameDir = @"C:\Program Files (x86)\Steam\steamapps\common\NASCAR Heat 5";
 
+        // NH5TK_OLD_MANAGER_DIR: tests point this at a copy, never the real old manager
         public static string OldManagerDir =>
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NASCAR Heat 5 Mod Manager");
+            Environment.GetEnvironmentVariable("NH5TK_OLD_MANAGER_DIR") is { Length: > 0 } test ? test
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NASCAR Heat 5 Mod Manager");
 
-        public static string OldManagerStockDir => Path.Combine(OldManagerDir, "NH5ModManager_Data", "Vanilla_Backup");
+        /// <summary>
+        /// The old manager's per-game data folder: newer builds keep Vanilla_Backup + DeployedManifest.json in
+        /// NH5ModManager_Data\Installs\&lt;game&gt;-&lt;hash&gt;\ (with game_folder.txt); older ones in NH5ModManager_Data itself.
+        /// </summary>
+        public static string OldManagerInstallDir
+        {
+            get
+            {
+                string data = Path.Combine(OldManagerDir, "NH5ModManager_Data");
+                if (Directory.Exists(Path.Combine(data, "Vanilla_Backup"))) return data;
+                string installs = Path.Combine(data, "Installs");
+                if (Directory.Exists(installs))
+                {
+                    string game = ToolkitConfig.GetPath("gameDir") ?? DefaultGameDir;
+                    var dirs = Directory.GetDirectories(installs).Where(d => Directory.Exists(Path.Combine(d, "Vanilla_Backup"))).ToList();
+                    foreach (var d in dirs)
+                    {
+                        string f = Path.Combine(d, "game_folder.txt");
+                        if (File.Exists(f) && string.Equals(Path.TrimEndingDirectorySeparator(File.ReadAllText(f).Trim()),
+                                                            Path.TrimEndingDirectorySeparator(game), StringComparison.OrdinalIgnoreCase))
+                            return d;
+                    }
+                    if (dirs.Count > 0) return dirs[0];
+                }
+                return data;
+            }
+        }
+
+        public static string OldManagerStockDir => Path.Combine(OldManagerInstallDir, "Vanilla_Backup");
 
         /// <summary>Game folder: saved choice, then the old manager's setting, then Steam's default library.</summary>
         public static string? FindGameDir()

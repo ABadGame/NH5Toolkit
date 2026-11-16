@@ -96,6 +96,7 @@ namespace NH5Toolkit
             moreMenu.Items.Add(new ToolStripSeparator());
             moreMenu.Items.Add("Export...", null, async (s, e) => await ExportProfile());
             moreMenu.Items.Add("Import...", null, async (s, e) => await ImportProfile());
+            moreMenu.Items.Add("Import from old Mod Manager...", null, async (s, e) => await ImportOldManager());
             moreMenu.Items.Add(new ToolStripSeparator());
             moreMenu.Items.Add("Choose game save folder...", null, (s, e) => ChooseSaveFolder());
             more.Click += (s, e) => { if (!_busy) moreMenu.Show(more, new Point(0, more.Height)); };
@@ -964,6 +965,101 @@ namespace NH5Toolkit
             finally
             {
                 try { Directory.Delete(tmp, true); } catch { }
+            }
+        }
+
+        /// <summary>Profile menu > Import from old Mod Manager: pick old profiles, import them, adopt what the old manager deployed.</summary>
+        private async Task ImportOldManager()
+        {
+            if (_busy || _profiles is null || _gameDir is null) return;
+            if (!OldManagerImport.Available)
+            {
+                MessageBox.Show(this, "The old NASCAR Heat 5 Mod Manager's Profiles folder wasn't found.", "Import from old Mod Manager",
+                                MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            SetBusy(true, "Reading the old Mod Manager's profiles...");
+            var old = await Task.Run(OldManagerImport.List);
+            string live = OldManagerImport.LiveProfile();
+            SetBusy(false, "");
+
+            using var f = new Form
+            {
+                Text = "Import from old Mod Manager", Size = new Size(640, 520), StartPosition = FormStartPosition.CenterParent,
+                MinimizeBox = false, ShowIcon = false, ShowInTaskbar = false, BackColor = Theme.WindowBack, ForeColor = Theme.NavText
+            };
+            var intro = new Label
+            {
+                Dock = DockStyle.Top, AutoSize = true, MaximumSize = new Size(600, 0), Padding = new Padding(14, 12, 14, 8), ForeColor = Theme.BodyText,
+                Text = "Each profile you tick becomes a toolkit profile with the same name and one mod holding its files. A profile keeps its " +
+                       "parked save (saves are matched by name). The files the old manager put in the game are taken over as they are: " +
+                       "nothing in the game changes now. Files are copied into the toolkit's store (the same file is stored once)."
+            };
+            var list = new ListView { Dock = DockStyle.Fill, CheckBoxes = true, View = View.Details, FullRowSelect = true };
+            list.Columns.Add("Profile", 230);
+            list.Columns.Add("Files", 70, HorizontalAlignment.Right);
+            list.Columns.Add("Size", 80, HorizontalAlignment.Right);
+            list.Columns.Add("Save", 180);
+            foreach (var op in old)
+            {
+                var it = new ListViewItem([op.Name, op.Files.Count.ToString(), ListStyle.FormatSize(op.Bytes),
+                    op.Name.Equals(live, StringComparison.OrdinalIgnoreCase) ? "live in the game now" : op.HasSave ? "parked save" : ""])
+                { Tag = op, Checked = true };
+                list.Items.Add(it);
+            }
+            var foot = new Label { Dock = DockStyle.Bottom, Height = 28, Padding = new Padding(14, 6, 0, 0), ForeColor = Theme.Muted };
+            void Sum()
+            {
+                long bytes = list.Items.Cast<ListViewItem>().Where(i => i.Checked).Sum(i => ((OldManagerImport.OldProfile)i.Tag!).Bytes);
+                long free = 0;
+                try { free = new DriveInfo(Path.GetPathRoot(ToolkitConfig.Dir)!).AvailableFreeSpace; } catch { }
+                foot.Text = $"Selected: {ListStyle.FormatSize(bytes)} at most (less when profiles share files)  ·  free on {Path.GetPathRoot(ToolkitConfig.Dir)}: {ListStyle.FormatSize(free)}";
+            }
+            list.ItemChecked += (s, e) => Sum();
+            Sum();
+            var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 44, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(8) };
+            var go = new Button { Text = "Import", Width = 90, DialogResult = DialogResult.OK };
+            var cancel = new Button { Text = "Cancel", Width = 90, DialogResult = DialogResult.Cancel };
+            buttons.Controls.AddRange([cancel, go]);
+            var pad = new Panel { Dock = DockStyle.Fill, Padding = new Padding(14, 0, 14, 0) };
+            pad.Controls.Add(list);
+            f.Controls.Add(pad);
+            f.Controls.Add(foot);
+            f.Controls.Add(buttons);
+            f.Controls.Add(intro);
+            f.AcceptButton = go;
+            f.CancelButton = cancel;
+            if (f.ShowDialog(this) != DialogResult.OK) return;
+            var chosen = list.Items.Cast<ListViewItem>().Where(i => i.Checked).Select(i => (OldManagerImport.OldProfile)i.Tag!).ToList();
+            if (chosen.Count == 0) return;
+
+            string game = _gameDir;
+            var lib = _library;
+            var profiles = _profiles;
+            SetBusy(true, "Importing from the old Mod Manager...");
+            try
+            {
+                var progress = new Progress<string>(t => _status.Text = t);
+                var ledger = await Task.Run(() => Ledger.Load(game));
+                var result = await Task.Run(() => OldManagerImport.Import(game, chosen, lib, profiles, ledger, progress, CancellationToken.None));
+                ProfileStore.ApplyToLibrary(profiles.Current, _library);
+                _library.Save();
+                SetBusy(false, $"Imported {result.Imported.Count} profiles from the old Mod Manager.");
+                FillProfiles();
+                Fill();
+                await RefreshPending();
+                MessageBox.Show(this,
+                    "Imported:\n• " + string.Join("\n• ", result.Imported) +
+                    (result.Live is not null ? $"\n\n\"{result.Live}\" is the profile in the game; {result.Adopted.Count} files the old manager deployed were taken over." : "") +
+                    (result.Notes.Count > 0 ? "\n\nNotes:\n• " + string.Join("\n• ", result.Notes.Distinct().Take(10)) : "") +
+                    "\n\nFrom now on, deploy with the toolkit only (the old manager doesn't know what the toolkit changed).",
+                    "Import from old Mod Manager", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                SetBusy(false, "Import stopped: " + ex.Message);
+                MessageBox.Show(this, "Import stopped: " + ex.Message + "\n\nNothing in the game was changed. Profiles imported before the error stay.",
+                                "Import from old Mod Manager", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 
