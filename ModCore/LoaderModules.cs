@@ -31,6 +31,7 @@ namespace NH5Toolkit.ModCore
             new("NoMotionBlur", "No Motion Blur", "Motion blur off + the Options > Display > Motion Blur row", []),
             new("Tracks", "Loader tracks", "Track slots from StreamingAssets\\...\\Tracks (*.sab + slot.txt)", []),
             new("GameFixes", "Game fixes", "Loader frame / game fixes (Frames)", []),
+            new("AiTakeover", "Pause AI", "Online: the AI drives your car while the pause menu is open. Any race: Home = AI on / off", ["pauseai\\pauseai_settings.txt"]),
         ];
 
         public static string LoaderDir(string gameDir) => Path.Combine(gameDir, "H5TrackLoader");

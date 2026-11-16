@@ -132,7 +132,7 @@ namespace NH5Toolkit
             var gameDir = GameScanner.FindGameDir();
             if (gameDir is null)
             {
-                _status.Text = "Game folder not found. Set it on the Game Check tab.";
+                _status.Text = "Game folder not found. Set it under Advanced > Game Check.";
                 return;
             }
 

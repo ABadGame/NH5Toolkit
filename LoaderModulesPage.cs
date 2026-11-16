@@ -92,7 +92,7 @@ namespace NH5Toolkit
             _gameDir = GameScanner.FindGameDir();
             if (_gameDir is null)
             {
-                _loader.Text = "Game folder not found. Set it on the Game Check tab.";
+                _loader.Text = "Game folder not found. Set it under Advanced > Game Check.";
                 return;
             }
             if (!LoaderModules.LoaderInstalled(_gameDir))

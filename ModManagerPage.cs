@@ -17,8 +17,8 @@ namespace NH5Toolkit
         [
             ("mymods", "My Mods", () => new MyModsPage()),
             ("loadermods", "Loader Modules", () => new LoaderModulesPage()),
-            ("mods", "In the Game", () => new ModsPage()),
-            ("gamecheck", "Game Check", () => new GameCheckPage()),
+            // 2026-11-16: the two scan tools (read-only) moved under one Advanced tab to keep the manager simple
+            ("advanced", "Advanced", () => new AdvancedPage()),
         ];
 
         public ModManagerPage()
