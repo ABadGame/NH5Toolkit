@@ -115,7 +115,7 @@ namespace NH5Toolkit
             var intro = new Label
             {
                 Text = "Click the On box to switch a mod on or off for this profile, then Deploy. To add a mod, use Add mod or drop a .zip " +
-                       "or folder here. Right-click a mod for details.",
+                       "or folder here. To see or untick a mod's files, select it and click Files... (or right-click it).",
                 ForeColor = Theme.BodyText,
                 AutoSize = true,
                 Location = new Point(31, 88)
@@ -133,6 +133,12 @@ namespace NH5Toolkit
             addMenu.Items.Add("A folder...", null, async (s, e) => await PickFolder());
             add.Click += (s, e) => { if (!_busy) addMenu.Show(add, new Point(0, add.Height)); };
             row.Controls.Add(add);
+            row.Controls.Add(Secondary("Files...", 80, () =>
+            {
+                if (Selected() is null) _status.Text = "Click a mod in the list first, then Files...";
+                else ShowDetailsDialog();
+                return Task.CompletedTask;
+            }));
 
             // order buttons: only while two switched-on mods change the same file
             _orderButtons.AutoSize = true;
@@ -184,15 +190,27 @@ namespace NH5Toolkit
             _list.MouseClick += (s, e) =>
             {
                 var hit = _list.HitTest(e.Location);
-                if (hit.Item is null) return;
-                if (e.Button == MouseButtons.Right)
-                {
-                    hit.Item.Selected = true;
-                    UpdateRowMenu();
-                    _rowMenu.Show(_list, e.Location);
-                }
-                else if (hit.SubItem is not null && hit.Item.SubItems.IndexOf(hit.SubItem) == 0)
+                if (hit.Item is not null && e.Button == MouseButtons.Left && hit.SubItem is not null && hit.Item.SubItems.IndexOf(hit.SubItem) == 0)
                     ToggleSelected();
+            };
+            // 2026-11-16 fix (user: "how do i view the files"): a ListView raises no MouseClick for the right button, so the row menu
+            // never opened; MouseUp does
+            _list.MouseUp += (s, e) =>
+            {
+                if (e.Button != MouseButtons.Right || _list.HitTest(e.Location).Item is not { } item) return;
+                item.Selected = true;
+                item.Focused = true;
+                UpdateRowMenu();
+                _rowMenu.Show(_list, e.Location);
+            };
+            // the On column: a drawn checkbox (the ☑ character falls back to a wide glyph at high display scaling and showed "...")
+            _list.DrawSubItem += (s, e) =>
+            {
+                if (e.ColumnIndex != 0 || e.Item?.Tag is not ModPackage pm) return;
+                var size = CheckBoxRenderer.GetGlyphSize(e.Graphics, System.Windows.Forms.VisualStyles.CheckBoxState.UncheckedNormal);
+                var at = new Point(e.Bounds.Left + (e.Bounds.Width - size.Width) / 2, e.Bounds.Top + (e.Bounds.Height - size.Height) / 2);
+                CheckBoxRenderer.DrawCheckBox(e.Graphics, at, pm.Enabled
+                    ? System.Windows.Forms.VisualStyles.CheckBoxState.CheckedNormal : System.Windows.Forms.VisualStyles.CheckBoxState.UncheckedNormal);
             };
             _list.DoubleClick += (s, e) => ToggleSelected();
             _list.KeyDown += (s, e) =>
@@ -358,7 +376,7 @@ namespace NH5Toolkit
             {
                 var item = new ListViewItem(
                 [
-                    m.Enabled ? "  ☑" : "  ☐",
+                    "",   // drawn as a checkbox (DrawSubItem)
                     m.Name + (m.Version.Length > 0 ? "  " + m.Version : ""),
                     Describe(m, overlaps)
                 ]) { Tag = m };

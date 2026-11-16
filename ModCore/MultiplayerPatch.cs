@@ -23,7 +23,8 @@ namespace NH5Toolkit.ModCore
         private const string Stock2020 = "https://n2020.mgrsys.com/";
         private const string Stock2022 = "https://n2022.mgrsys.com/";
 
-        private static string CachePath => Path.Combine(ToolkitConfig.Dir, "multiplayer_patch.json");
+        // v2 2026-11-16: a dll already pointing at the server maps to itself (v1 cached Cecil rewrites of such dlls)
+        private static string CachePath => Path.Combine(ToolkitConfig.Dir, "multiplayer_patch_v2.json");
 
         /// <summary>The hidden mod for this plan: the patched copy of the dll the other enabled mods leave in the game.</summary>
         public static ModPackage Build(string gameDir, ModLibrary library, Ledger ledger, CancellationToken cancel)
@@ -161,7 +162,13 @@ namespace NH5Toolkit.ModCore
                 il.Append(n2020);
                 il.Append(ret);
             }
-            // else: already pointing at the community server: written unchanged
+            else
+            {
+                // already pointing at the community server: the file as it is (a Cecil rewrite would change its bytes and
+                // make Deploy replace the dll with an identical-acting copy)
+                File.Copy(dll, output, overwrite: true);
+                return;
+            }
             asm.Write(output);
         }
 
