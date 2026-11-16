@@ -16,6 +16,7 @@ namespace NH5Toolkit
         private static readonly (string Key, string Text, Func<UserControl> Make)[] Sections =
         [
             ("mymods", "My Mods", () => new MyModsPage()),
+            ("loadermods", "Loader Modules", () => new LoaderModulesPage()),
             ("mods", "In the Game", () => new ModsPage()),
             ("gamecheck", "Game Check", () => new GameCheckPage()),
         ];
