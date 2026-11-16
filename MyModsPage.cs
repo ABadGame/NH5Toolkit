@@ -1,4 +1,5 @@
-﻿using NH5Toolkit.ModCore;
+﻿using System.IO.Compression;
+using NH5Toolkit.ModCore;
 
 namespace NH5Toolkit
 {
@@ -21,6 +22,12 @@ namespace NH5Toolkit
         private readonly Button _apply;
         private readonly ContextMenuStrip _rowMenu = new();
         private ModLibrary _library = new();
+        private ProfileStore? _profiles;
+        private readonly ComboBox _profileBox = new();
+        private readonly CheckBox _multiplayer = new();
+        private readonly Label _gameLabel = new();
+        private readonly Label _deployedLabel = new();
+        private bool _filling;
         private StockIndex? _stock;
         private string? _gameDir;
         private bool _busy;
@@ -38,18 +45,85 @@ namespace NH5Toolkit
             };
 
             var top = new Panel { Dock = DockStyle.Top, Height = 104, BackColor = Theme.WindowBack };
-            top.Controls.Add(new Label
-            {
-                Text = "Click the On box to switch a mod on or off, then Apply. To add a mod, use Add mod or drop a .zip or folder here. " +
-                       "Right-click a mod for details.",
-                ForeColor = Theme.BodyText,
-                AutoSize = false,
-                Size = new Size(900, 22),
-                Location = new Point(31, 8),
-                AutoEllipsis = true
-            });
 
-            var row = new FlowLayoutPanel { Location = new Point(26, 38), AutoSize = true, WrapContents = false, BackColor = Theme.WindowBack };
+            // 2026-11-16 (user: "same functionality as the old one just with a new UI. profiles, deploy, etc."):
+            // game folder + Refresh, and the old manager's profile bar (+ New, rename / copy / delete / export / import, Enable Multiplayer)
+            var gameRow = new FlowLayoutPanel
+            {
+                Location = new Point(26, 6), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, BackColor = Theme.WindowBack
+            };
+            gameRow.Controls.Add(new Label { Text = "Game folder", AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(3, 9, 6, 0) });
+            _gameLabel.AutoSize = false;
+            _gameLabel.Height = 22;
+            _gameLabel.AutoEllipsis = true;   // a long path shortens with ... instead of pushing the buttons off screen
+            _gameLabel.ForeColor = Theme.NavText;
+            _gameLabel.Margin = new Padding(0, 9, 10, 0);
+            gameRow.Controls.Add(_gameLabel);
+            gameRow.Controls.Add(Secondary("Change...", 84, () => { PickGameDir(); return Task.CompletedTask; }));
+            gameRow.Controls.Add(Secondary("Refresh", 76, Reload));
+            top.Controls.Add(gameRow);
+
+            var profileRow = new FlowLayoutPanel
+            {
+                Location = new Point(26, 46), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, BackColor = Theme.WindowBack
+            };
+            profileRow.Controls.Add(new Label { Text = "Profile", AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(3, 9, 6, 0) });
+            _profileBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            _profileBox.Width = 200;
+            _profileBox.Margin = new Padding(0, 5, 6, 0);
+            _profileBox.FlatStyle = FlatStyle.Flat;
+            _profileBox.BackColor = Theme.CardBack;
+            _profileBox.ForeColor = Theme.NavText;
+            _profileBox.DrawMode = DrawMode.OwnerDrawFixed;   // Windows paints a DropDownList white in dark mode otherwise
+            _profileBox.ItemHeight = 20;
+            _profileBox.DrawItem += (s, e) =>
+            {
+                bool hot = (e.State & DrawItemState.Selected) != 0 && (e.State & DrawItemState.ComboBoxEdit) == 0;
+                using var back = new SolidBrush(hot ? Theme.NavActiveBack : Theme.CardBack);
+                e.Graphics.FillRectangle(back, e.Bounds);
+                if (e.Index >= 0)
+                    TextRenderer.DrawText(e.Graphics, _profileBox.Items[e.Index]?.ToString(), _profileBox.Font, e.Bounds,
+                                          hot ? Theme.NavActiveText : Theme.NavText, TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+            };
+            _profileBox.SelectedIndexChanged += async (s, e) => await SelectProfile();
+            profileRow.Controls.Add(_profileBox);
+            profileRow.Controls.Add(Secondary("+ New", 70, () => { NewProfile(); return Task.CompletedTask; }));
+            var more = Secondary("Profile ▾", 90, () => Task.CompletedTask);
+            var moreMenu = new ContextMenuStrip();
+            moreMenu.Items.Add("Rename...", null, (s, e) => RenameProfile());
+            moreMenu.Items.Add("Copy...", null, (s, e) => CopyProfile());
+            moreMenu.Items.Add("Delete...", null, (s, e) => DeleteProfile());
+            moreMenu.Items.Add(new ToolStripSeparator());
+            moreMenu.Items.Add("Export...", null, async (s, e) => await ExportProfile());
+            moreMenu.Items.Add("Import...", null, async (s, e) => await ImportProfile());
+            more.Click += (s, e) => { if (!_busy) moreMenu.Show(more, new Point(0, more.Height)); };
+            profileRow.Controls.Add(more);
+            _multiplayer.Text = "Enable Multiplayer";
+            _multiplayer.AutoSize = true;
+            _multiplayer.ForeColor = Theme.NavText;
+            _multiplayer.Margin = new Padding(16, 8, 0, 0);
+            _multiplayer.CheckedChanged += async (s, e) => await MultiplayerChanged();
+            profileRow.Controls.Add(_multiplayer);
+            _deployedLabel.AutoSize = true;
+            _deployedLabel.ForeColor = Theme.Muted;
+            _deployedLabel.Margin = new Padding(16, 9, 0, 0);
+            profileRow.Controls.Add(_deployedLabel);
+            top.Controls.Add(profileRow);
+            var intro = new Label
+            {
+                Text = "Click the On box to switch a mod on or off for this profile, then Deploy. To add a mod, use Add mod or drop a .zip " +
+                       "or folder here. Right-click a mod for details.",
+                ForeColor = Theme.BodyText,
+                AutoSize = true,
+                Location = new Point(31, 88)
+            };
+            top.Controls.Add(intro);
+
+            // 2026-11-16 fix (user screenshot): GrowAndShrink, or the row kept its default 200x100 size and hid the status line
+            var row = new FlowLayoutPanel
+            {
+                Location = new Point(26, 38), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, BackColor = Theme.WindowBack
+            };
             var add = Secondary("Add mod...", 110, () => Task.CompletedTask);
             var addMenu = new ContextMenuStrip();
             addMenu.Items.Add("A .zip file...", null, async (s, e) => await PickZips());
@@ -69,15 +143,33 @@ namespace NH5Toolkit
             top.Controls.Add(row);
 
             _status.Location = new Point(31, 80);
+            _status.MaximumSize = new Size(2000, 0);
             _status.AutoSize = true;
             _status.ForeColor = Theme.BodyText;
             top.Controls.Add(_status);
 
             _orderHint.AutoSize = true;
             _orderHint.ForeColor = Color.Goldenrod;
-            _orderHint.Location = new Point(360, 46);
+            _orderHint.Margin = new Padding(12, 9, 0, 0);
             _orderHint.Visible = false;
-            top.Controls.Add(_orderHint);
+            row.Controls.Add(_orderHint);
+
+            // lay the top area out from the window width: the intro wraps, the rows follow it (no fixed 900 px line)
+            void LayoutTop()
+            {
+                intro.MaximumSize = new Size(Math.Max(200, top.Width - 62), 0);
+                _gameLabel.Width = Math.Max(120, top.Width - 62 - 90 - 84 - 76 - 24);
+                profileRow.Top = gameRow.Bottom + 6;
+                intro.Top = profileRow.Bottom + 10;
+                row.Top = intro.Bottom + 8;
+                _status.Top = row.Bottom + 6;
+                top.Height = _status.Bottom + 8;
+            }
+            top.Resize += (s, e) => LayoutTop();
+            row.SizeChanged += (s, e) => LayoutTop();
+            gameRow.SizeChanged += (s, e) => LayoutTop();
+            profileRow.SizeChanged += (s, e) => LayoutTop();
+            HandleCreated += (s, e) => LayoutTop();
 
             _list.Dock = DockStyle.Fill;
             _list.MultiSelect = false;
@@ -124,7 +216,7 @@ namespace NH5Toolkit
             _pending.Font = new Font("Segoe UI Semibold", 10f);
             _pending.Location = new Point(20, 18);
             _applyBar.Controls.Add(_pending);
-            _apply = Primary("Apply", 120, async () => await ApplyChanges());
+            _apply = Primary("Deploy", 120, async () => await ApplyChanges());
             _applyBar.Controls.Add(_apply);
             _applyBar.Resize += (s, e) => _apply.Location = new Point(_applyBar.Width - _apply.Width - 20, 11);
 
@@ -182,9 +274,13 @@ namespace NH5Toolkit
         private async Task Reload()
         {
             _gameDir = GameScanner.FindGameDir();
+            _gameLabel.Text = _gameDir ?? "not found";
             try
             {
                 _library = ModLibrary.Load();
+                _profiles = ProfileStore.Load(_library);
+                ProfileStore.ApplyToLibrary(_profiles.Current, _library);
+                FillProfiles();
             }
             catch (Exception ex)
             {
@@ -193,7 +289,7 @@ namespace NH5Toolkit
             }
             if (_gameDir is null)
             {
-                SetBusy(true, "Game folder not found. Set it under Advanced > Game Check.");
+                SetBusy(true, "Game folder not found. Click Change... and pick the folder with NASCARHeat5.exe.");
                 return;
             }
 
@@ -345,15 +441,18 @@ namespace NH5Toolkit
             var stock = _stock;
             try
             {
-                var plan = await Task.Run(() => Deployer.Plan(game, lib, Ledger.Load(game), stock, CancellationToken.None));
+                bool mp = _profiles?.Current.Multiplayer == true;
+                var plan = await Task.Run(() => MakePlan(game, lib, Ledger.Load(game), stock, mp));
                 int changes = plan.Changes.Count();
                 int installers = plan.InstallersToRun.Count;
-                _applyBar.Visible = changes > 0 || installers > 0;
+                string profile = _profiles?.Current.Name ?? "";
+                bool otherProfile = _profiles is not null && !string.Equals(_profiles.Deployed, profile, StringComparison.OrdinalIgnoreCase);
+                _applyBar.Visible = changes > 0 || installers > 0 || otherProfile;
                 _pending.Text = changes > 0 || installers > 0
-                    ? "Not applied yet: " + (changes > 0 ? $"{changes} file change{(changes == 1 ? "" : "s")}" : "") +
+                    ? $"\"{profile}\" isn't in the game yet: " + (changes > 0 ? $"{changes} file change{(changes == 1 ? "" : "s")}" : "") +
                       (changes > 0 && installers > 0 ? " and " : "") + (installers > 0 ? $"{installers} installer{(installers == 1 ? "" : "s")} to run" : "") +
-                      ". The game changes only when you click Apply."
-                    : "";
+                      ". Click Deploy."
+                    : otherProfile ? $"\"{profile}\" matches the game files. Click Deploy to make it the active profile." : "";
             }
             catch (Exception ex)
             {
@@ -407,7 +506,7 @@ namespace NH5Toolkit
             if (messages.Count > 0)
                 MessageBox.Show(this, string.Join("\n\n", messages), "Some mods weren't added", MessageBoxButtons.OK, MessageBoxIcon.Information);
             else if (last is not null)
-                _status.Text = $"Added \"{last.Name}\". It's off: tick its On box, then Apply.";
+                _status.Text = $"Added \"{last.Name}\". It's off: tick its On box, then Deploy.";
         }
 
         private async void ToggleSelected()
@@ -415,6 +514,7 @@ namespace NH5Toolkit
             if (_busy || Selected() is not { } m) return;
             m.Enabled = !m.Enabled;
             _library.Save();
+            ProfileChanged();
             Fill(m);
             await RefreshPending();
         }
@@ -424,6 +524,7 @@ namespace NH5Toolkit
             if (_busy || Selected() is not { } m) return;
             _library.Move(m, delta);
             _library.Save();
+            ProfileChanged();
             Fill(m);
             await RefreshPending();
         }
@@ -444,6 +545,8 @@ namespace NH5Toolkit
                                 "Remove", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             _library.Mods.Remove(m);
             _library.Save();
+            _profiles?.ForgetMod(m.Id);
+            _profiles?.Save();
             if (m.InstallerDir is not null && m.InstallerDir.StartsWith(ToolkitConfig.Dir, StringComparison.OrdinalIgnoreCase))
                 try { Directory.Delete(m.InstallerDir, true); } catch { /* only the manager's own copy */ }
             Fill();
@@ -455,11 +558,17 @@ namespace NH5Toolkit
             string game = _gameDir;
             var lib = _library;
             var stock = _stock;
+            if (_profiles is null) return;
+            string profileName = _profiles.Current.Name;
+            bool mp = _profiles.Current.Multiplayer;
             SetBusy(true, "Checking what needs to change...");
             try
             {
                 var ledger = await Task.Run(() => Ledger.Load(game));
-                var plan = await Task.Run(() => Deployer.Plan(game, lib, ledger, stock, CancellationToken.None));
+                // an installer that runs in this deploy may edit Assembly-CSharp.dll: then the multiplayer patch goes on in a 2nd pass
+                var first = await Task.Run(() => Deployer.Plan(game, lib, ledger, stock, CancellationToken.None));
+                bool patchNow = mp && first.InstallersToRun.Count == 0;
+                var plan = patchNow ? await Task.Run(() => MakePlan(game, lib, ledger, stock, true)) : first;
 
                 if (plan.Problems.Count > 0)
                 {
@@ -474,7 +583,12 @@ namespace NH5Toolkit
                 if (changes.Count == 0 && plan.InstallersToRun.Count == 0
                     && !plan.Steps.Any(s => s.Kind == StepKind.Keep && !ledger.Files.ContainsKey(s.Path)))
                 {
-                    SetBusy(false, "The game already matches your list. Nothing to do.");
+                    _profiles.Deployed = profileName;
+                    _profiles.Save();
+                    FillProfiles();
+                    SetBusy(false, $"The game already matches \"{profileName}\". It's now the active profile.");
+                    await RefreshPending();
+                    OfferLaunch(profileName);
                     return;
                 }
 
@@ -487,11 +601,12 @@ namespace NH5Toolkit
                         ? "• Run installer: " + string.Join(", ", plan.InstallersToRun.Select(m => m.Name)) +
                           " (its window opens: click its Install button, then close it)\n"
                         : "") +
+                    (mp ? "• Enable Multiplayer: on (Assembly-CSharp.dll points at the community server)\n" : "") +
                     (plan.Warnings.Count > 0 ? "\nNote:\n• " + string.Join("\n• ", plan.Warnings.Take(8)) + "\n" : "") +
-                    "\nEvery file the manager replaces is saved first, so switching a mod off puts it back.\nApply now?";
-                if (MessageBox.Show(this, summary, "Apply changes", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+                    "\nEvery file the manager replaces is saved first, so switching a mod off puts it back.\nDeploy now?";
+                if (MessageBox.Show(this, summary, $"Deploy \"{profileName}\"", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
                 {
-                    SetBusy(false, "Not applied.");
+                    SetBusy(false, "Not deployed.");
                     return;
                 }
 
@@ -520,23 +635,339 @@ namespace NH5Toolkit
                     _library.Save();
                 }
 
+                // 2nd pass: the multiplayer patch on top of what the installers left
+                if (mp && !patchNow)
+                {
+                    _status.Text = "Enable Multiplayer...";
+                    var second = await Task.Run(() => MakePlan(game, lib, ledger, stock, true));
+                    if (second.Problems.Count > 0)
+                        throw new IOException("Enable Multiplayer wasn't applied: " + string.Join(" ", second.Problems.Take(3)));
+                    await Task.Run(() => Deployer.Apply(game, second, ledger, progress, CancellationToken.None));
+                }
+
                 // Installer mods that are off and fully put back: forget their run, so switching on runs them fresh.
                 foreach (var mod in _library.Mods)
                     InstallerCapture.ForgetIfRemoved(mod, ledger);
                 _library.Save();
+                _profiles.Deployed = profileName;
+                _profiles.Save();
+                FillProfiles();
                 Fill();
 
-                SetBusy(false, $"Applied: {changes.Count} file changes" + (ran.Count > 0 ? "; ran " + string.Join(", ", ran) : "") +
-                               ". Start the game to try it.");
+                SetBusy(false, $"Deployed \"{profileName}\": {changes.Count} file changes" + (ran.Count > 0 ? "; ran " + string.Join(", ", ran) : "") + ".");
+                await RefreshPending();
+                OfferLaunch(profileName);
+                return;
             }
             catch (Exception ex)
             {
-                SetBusy(false, "Apply stopped: " + ex.Message);
-                MessageBox.Show(this, "Apply stopped part way:\n\n" + ex.Message +
-                                      "\n\nEvery file it already changed is recorded, so pressing Apply again continues safely.",
-                                "Apply changes", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                SetBusy(false, "Deploy stopped: " + ex.Message);
+                MessageBox.Show(this, "Deploy stopped part way:\n\n" + ex.Message +
+                                      "\n\nEvery file it already changed is recorded, so pressing Deploy again continues safely.",
+                                "Deploy", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             await RefreshPending();
+        }
+
+        // ---------- profiles (2026-11-16: the old NH5 Mod Manager's profiles, deploy, multiplayer) ----------
+
+        /// <summary>The library's plan, plus the Enable Multiplayer step on top when the profile has it on.</summary>
+        private static ApplyPlan MakePlan(string game, ModLibrary lib, Ledger ledger, StockIndex stock, bool multiplayer)
+        {
+            if (!multiplayer) return Deployer.Plan(game, lib, ledger, stock, CancellationToken.None);
+            var patch = MultiplayerPatch.Build(game, lib, ledger, CancellationToken.None);
+            return Deployer.Plan(game, MultiplayerPatch.WithPatch(lib, patch), ledger, stock, CancellationToken.None);
+        }
+
+        private void FillProfiles()
+        {
+            if (_profiles is null) return;
+            _filling = true;
+            _profileBox.Items.Clear();
+            foreach (var p in _profiles.Profiles) _profileBox.Items.Add(p.Name);
+            _profileBox.SelectedItem = _profiles.Current.Name;
+            _multiplayer.Checked = _profiles.Current.Multiplayer;
+            _filling = false;
+            _deployedLabel.Text = _profiles.Deployed is null ? "" : $"In the game: {_profiles.Deployed}";
+        }
+
+        private void ProfileChanged()
+        {
+            if (_profiles is null) return;
+            ProfileStore.CaptureFromLibrary(_profiles.Current, _library);
+            _profiles.Save();
+        }
+
+        private async Task SelectProfile()
+        {
+            if (_filling || _profiles is null || _profileBox.SelectedItem is not string name) return;
+            if (_busy) { FillProfiles(); return; }
+            _profiles.Selected = name;
+            _profiles.Save();
+            ProfileStore.ApplyToLibrary(_profiles.Current, _library);
+            _library.Save();
+            FillProfiles();
+            Fill();
+            await RefreshPending();
+            _status.Text = string.Equals(_profiles.Deployed, name, StringComparison.OrdinalIgnoreCase)
+                ? $"\"{name}\" is the profile in the game."
+                : $"\"{name}\" selected. The game doesn't change until you click Deploy.";
+        }
+
+        private async Task MultiplayerChanged()
+        {
+            if (_filling || _profiles is null) return;
+            _profiles.Current.Multiplayer = _multiplayer.Checked;
+            _profiles.Save();
+            await RefreshPending();
+        }
+
+        private string? AskName(string title, string start)
+        {
+            using var f = new Form
+            {
+                Text = title, Size = new Size(380, 160), StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog,
+                MinimizeBox = false, MaximizeBox = false, ShowIcon = false, ShowInTaskbar = false, BackColor = Theme.WindowBack, ForeColor = Theme.NavText
+            };
+            var box = new TextBox { Text = start, Location = new Point(16, 18), Width = 330, BackColor = Theme.CardBack, ForeColor = Theme.NavText };
+            var error = new Label { Location = new Point(16, 48), AutoSize = true, ForeColor = Color.Goldenrod };
+            var ok = new Button { Text = "OK", Location = new Point(190, 76), Width = 75, DialogResult = DialogResult.None };
+            var cancel = new Button { Text = "Cancel", Location = new Point(271, 76), Width = 75, DialogResult = DialogResult.Cancel };
+            ok.Click += (s, e) =>
+            {
+                if (ProfileStore.CheckName(box.Text, _profiles!, start.Length > 0 && title.StartsWith("Rename") ? start : null) is { } msg)
+                    error.Text = msg;
+                else
+                    f.DialogResult = DialogResult.OK;
+            };
+            f.Controls.AddRange([box, error, ok, cancel]);
+            f.AcceptButton = ok;
+            f.CancelButton = cancel;
+            return f.ShowDialog(this) == DialogResult.OK ? box.Text.Trim() : null;
+        }
+
+        private void NewProfile()
+        {
+            if (_busy || _profiles is null || AskName("New profile", "") is not { } name) return;
+            _profiles.Profiles.Add(new ModProfile { Name = name });   // starts with no mods on, like the old manager
+            _profileBox.Items.Add(name);
+            _profileBox.SelectedItem = name;   // SelectProfile does the rest
+        }
+
+        private void CopyProfile()
+        {
+            if (_busy || _profiles is null || AskName("Copy profile", _profiles.Current.Name + " copy") is not { } name) return;
+            var src = _profiles.Current;
+            _profiles.Profiles.Add(new ModProfile { Name = name, On = src.On.ToList(), Multiplayer = src.Multiplayer });
+            _profileBox.Items.Add(name);
+            _profileBox.SelectedItem = name;
+        }
+
+        private void RenameProfile()
+        {
+            if (_busy || _profiles is null) return;
+            var cur = _profiles.Current;
+            if (AskName("Rename profile", cur.Name) is not { } name || name == cur.Name) return;
+            if (string.Equals(_profiles.Deployed, cur.Name, StringComparison.OrdinalIgnoreCase)) _profiles.Deployed = name;
+            cur.Name = name;
+            _profiles.Selected = name;
+            _profiles.Save();
+            FillProfiles();
+        }
+
+        private async void DeleteProfile()
+        {
+            if (_busy || _profiles is null) return;
+            var cur = _profiles.Current;
+            if (_profiles.Profiles.Count == 1)
+            {
+                MessageBox.Show(this, "This is the only profile. Make another one first.", "Delete profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (MessageBox.Show(this, $"Delete the profile \"{cur.Name}\"? Its mods stay in your mod list and the game isn't changed.",
+                                "Delete profile", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            _profiles.Profiles.Remove(cur);
+            if (string.Equals(_profiles.Deployed, cur.Name, StringComparison.OrdinalIgnoreCase)) _profiles.Deployed = null;
+            _profiles.Selected = _profiles.Profiles[0].Name;
+            _profiles.Save();
+            ProfileStore.ApplyToLibrary(_profiles.Current, _library);
+            _library.Save();
+            FillProfiles();
+            Fill();
+            await RefreshPending();
+        }
+
+        /// <summary>
+        /// Profile package (.nh5tkprof, a zip): profile.json (name, Enable Multiplayer, mods in order with name / version) and
+        /// mods/&lt;n&gt;/&lt;game-relative files&gt;. Import adds mods that aren't in the list yet and the profile.
+        /// </summary>
+        private async Task ExportProfile()
+        {
+            if (_busy || _profiles is null) return;
+            var prof = _profiles.Current;
+            var mods = prof.On.Select(id => _library.Mods.FirstOrDefault(m => m.Id == id)).OfType<ModPackage>().ToList();
+            var installers = mods.Where(m => m.IsInstaller).ToList();
+            using var d = new SaveFileDialog
+            {
+                Title = "Export profile", FileName = prof.Name + ".nh5tkprof", Filter = "Toolkit profile (*.nh5tkprof)|*.nh5tkprof|Zip (*.zip)|*.zip"
+            };
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            string target = d.FileName;
+            SetBusy(true, $"Exporting \"{prof.Name}\"...");
+            try
+            {
+                await Task.Run(() =>
+                {
+                    string tmp = target + ".part";
+                    if (File.Exists(tmp)) File.Delete(tmp);
+                    using (var zip = System.IO.Compression.ZipFile.Open(tmp, System.IO.Compression.ZipArchiveMode.Create))
+                    {
+                        var meta = new ExportMeta { Name = prof.Name, Multiplayer = prof.Multiplayer };
+                        int n = 0;
+                        foreach (var m in mods.Where(m => !m.IsInstaller))
+                        {
+                            string dir = $"mods/{n++}/";
+                            meta.Mods.Add(new ExportMod { Folder = dir, Name = m.Name, Version = m.Version });
+                            foreach (var (path, sha) in m.Files)
+                                zip.CreateEntryFromFile(FileStore.PathFor(sha), dir + path.Replace('\\', '/'));
+                        }
+                        var entry = zip.CreateEntry("profile.json");
+                        using var w = new StreamWriter(entry.Open());
+                        w.Write(System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+                    }
+                    File.Move(tmp, target, overwrite: true);
+                });
+                SetBusy(false, $"Exported \"{prof.Name}\" to {Path.GetFileName(target)}." +
+                               (installers.Count > 0 ? $" Installer mods aren't included ({string.Join(", ", installers.Select(m => m.Name))}): share their own download." : ""));
+            }
+            catch (Exception ex)
+            {
+                SetBusy(false, "Export failed: " + ex.Message);
+            }
+        }
+
+        private sealed class ExportMeta
+        {
+            public string Name { get; set; } = "";
+            public bool Multiplayer { get; set; }
+            public List<ExportMod> Mods { get; set; } = new();
+        }
+
+        private sealed class ExportMod
+        {
+            public string Folder { get; set; } = "";
+            public string Name { get; set; } = "";
+            public string Version { get; set; } = "";
+        }
+
+        /// <summary>Imports a toolkit profile (.nh5tkprof) or an old NH5 Mod Manager profile package (.nh5prof / .zip).</summary>
+        private async Task ImportProfile()
+        {
+            if (_busy || _profiles is null || _stock is null) return;
+            using var d = new OpenFileDialog
+            {
+                Title = "Import profile",
+                Filter = "Profile packages (*.nh5tkprof;*.nh5prof;*.zip)|*.nh5tkprof;*.nh5prof;*.zip"
+            };
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            string tmp = Path.Combine(Path.GetTempPath(), $"nh5tk_import_{Guid.NewGuid():N}");
+            SetBusy(true, $"Importing {Path.GetFileName(d.FileName)}... (big profiles take a minute: every file is copied and checked)");
+            try
+            {
+                var stock = _stock;
+                var lib = _library;
+                var (name, multiplayer, folders) = await Task.Run(() =>
+                {
+                    System.IO.Compression.ZipFile.ExtractToDirectory(d.FileName, tmp);
+                    var list = new List<(string Dir, string Name, string Version, HashSet<string>? Only)>();
+                    string metaPath = Path.Combine(tmp, "profile.json");
+                    if (File.Exists(metaPath))
+                    {
+                        var meta = System.Text.Json.JsonSerializer.Deserialize<ExportMeta>(File.ReadAllText(metaPath)) ?? new();
+                        foreach (var m in meta.Mods)
+                            list.Add((Path.Combine(tmp, m.Folder.Replace('/', '\\').TrimEnd('\\')), m.Name, m.Version, null));
+                        return (meta.Name, meta.Multiplayer, list);
+                    }
+                    // old manager package: <profile>/ (game-folder mirror) + <profile>.json ("[Asset] rel" ticked files)
+                    var dirs = Directory.GetDirectories(tmp);
+                    if (dirs.Length == 0) throw new IOException("This isn't a profile package (no profile folder inside).");
+                    string pname = Path.GetFileName(dirs[0]);
+                    HashSet<string>? only = null;
+                    string json = Path.Combine(tmp, pname + ".json");
+                    if (File.Exists(json))
+                    {
+                        var ticked = System.Text.Json.JsonSerializer.Deserialize<List<string>>(File.ReadAllText(json)) ?? new();
+                        only = new HashSet<string>(ticked.Select(t => t.Contains("] ") ? t[(t.IndexOf("] ") + 2)..] : t), StringComparer.OrdinalIgnoreCase);
+                    }
+                    foreach (var sub in Directory.GetDirectories(dirs[0]).Where(x => Path.GetFileName(x).Equals("Save", StringComparison.OrdinalIgnoreCase)).ToList())
+                        Directory.Delete(sub, true);   // never a save in a mod package
+                    list.Add((dirs[0], pname, "", only));
+                    return (pname, false, list);
+                });
+
+                var on = new List<string>();
+                var messages = new List<string>();
+                foreach (var (dir, modName, version, only) in folders)
+                {
+                    if (!Directory.Exists(dir)) continue;
+                    var result = await Task.Run(() => Importer.Import(dir, lib, stock, CancellationToken.None));
+                    if (result.Mod is null) { messages.Add($"{modName}: {result.Error}"); continue; }
+                    var mod = result.Mod;
+                    if (only is not null)
+                        foreach (var path in mod.Files.Keys.Where(k => !only.Contains(k)).ToList()) mod.Files.Remove(path);
+                    mod.Name = modName;
+                    mod.Version = version;
+                    // the same mod already in the list (same files): use that one
+                    var same = _library.Mods.FirstOrDefault(m => m.Files.Count == mod.Files.Count &&
+                        mod.Files.All(f => m.Files.TryGetValue(f.Key, out var sha) && sha.Equals(f.Value, StringComparison.OrdinalIgnoreCase)));
+                    if (same is not null) { on.Add(same.Id); continue; }
+                    mod.Size = mod.Files.Values.Distinct().Sum(sha => new FileInfo(FileStore.PathFor(sha)).Length);
+                    _library.Add(mod);
+                    on.Add(mod.Id);
+                }
+                _library.Save();
+
+                string newName = name;
+                for (int i = 2; ProfileStore.CheckName(newName, _profiles) is not null; i++) newName = $"{name} ({i})";
+                _profiles.Profiles.Add(new ModProfile { Name = newName, On = on, Multiplayer = multiplayer });
+                _profiles.Save();
+                SetBusy(false);
+                _profileBox.Items.Add(newName);
+                _profileBox.SelectedItem = newName;
+                _status.Text = $"Imported profile \"{newName}\" ({on.Count} mods). Click Deploy to put it in the game.";
+                if (messages.Count > 0)
+                    MessageBox.Show(this, string.Join("\n\n", messages), "Some mods weren't added", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                SetBusy(false, "Import failed: " + ex.Message);
+            }
+            finally
+            {
+                try { Directory.Delete(tmp, true); } catch { }
+            }
+        }
+
+        private async void PickGameDir()
+        {
+            if (_busy) return;
+            using var d = new FolderBrowserDialog { Description = "Pick the NASCAR Heat 5 folder (the one with NASCARHeat5.exe)" };
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            if (!GameScanner.IsGameDir(d.SelectedPath))
+            {
+                MessageBox.Show(this, "NASCARHeat5.exe isn't in that folder.", "Game folder", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            ToolkitConfig.SetPath("gameDir", d.SelectedPath);
+            await Reload();
+        }
+
+        private void OfferLaunch(string profile)
+        {
+            if (MessageBox.Show(this, $"\"{profile}\" is in the game. Start NASCAR Heat 5 now?", "Deploy", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("steam://rungameid/1265860") { UseShellExecute = true }); }
+            catch (Exception ex) { MessageBox.Show(this, "Couldn't start the game: " + ex.Message, "Deploy"); }
         }
     }
 }

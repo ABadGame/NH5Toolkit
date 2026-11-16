@@ -8,4 +8,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Enable Multiplayer: the old NH5 Mod Manager's GetBaseURL patch (ModCore/MultiplayerPatch.cs) -->
+    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+  </ItemGroup>
+
 </Project>

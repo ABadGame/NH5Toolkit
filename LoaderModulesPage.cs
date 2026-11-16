@@ -19,18 +19,20 @@ namespace NH5Toolkit
             BackColor = Theme.WindowBack;
 
             var top = new Panel { Dock = DockStyle.Top, Height = 104, BackColor = Theme.WindowBack };
-            top.Controls.Add(new Label
+            var intro = new Label
             {
                 Text = "Switch H5 Track Loader mods off without uninstalling them. Click the On box (or double-click a row). " +
                        "Changes take effect the next time the game starts.",
                 ForeColor = Theme.BodyText,
-                AutoSize = false,
-                Size = new Size(900, 22),
-                Location = new Point(31, 8),
-                AutoEllipsis = true
-            });
+                AutoSize = true,
+                Location = new Point(31, 8)
+            };
+            top.Controls.Add(intro);
 
-            var row = new FlowLayoutPanel { Location = new Point(26, 40), AutoSize = true, WrapContents = false, BackColor = Theme.WindowBack };
+            var row = new FlowLayoutPanel
+            {
+                Location = new Point(26, 40), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, BackColor = Theme.WindowBack
+            };
             row.Controls.Add(Btn("On / off", 80, ToggleSelected));
             row.Controls.Add(Btn("All on", 70, () => SetAll(true)));
             row.Controls.Add(Btn("Refresh", 80, Reload));
@@ -41,6 +43,19 @@ namespace NH5Toolkit
             _loader.AutoSize = true;
             _loader.ForeColor = Theme.BodyText;
             top.Controls.Add(_loader);
+
+            // 2026-11-16: same layout fix as My Mods (wrap to the window width, rows follow the text)
+            void LayoutTop()
+            {
+                intro.MaximumSize = new Size(Math.Max(200, top.Width - 62), 0);
+                _loader.MaximumSize = new Size(Math.Max(200, top.Width - 62), 0);
+                row.Top = intro.Bottom + 8;
+                _loader.Top = row.Bottom + 8;
+                top.Height = _loader.Bottom + 8;
+            }
+            top.Resize += (s, e) => LayoutTop();
+            _loader.SizeChanged += (s, e) => LayoutTop();
+            HandleCreated += (s, e) => LayoutTop();
 
             _list.Dock = DockStyle.Fill;
             _list.MultiSelect = false;
