@@ -96,6 +96,8 @@ namespace NH5Toolkit
             moreMenu.Items.Add(new ToolStripSeparator());
             moreMenu.Items.Add("Export...", null, async (s, e) => await ExportProfile());
             moreMenu.Items.Add("Import...", null, async (s, e) => await ImportProfile());
+            moreMenu.Items.Add(new ToolStripSeparator());
+            moreMenu.Items.Add("Choose game save folder...", null, (s, e) => ChooseSaveFolder());
             more.Click += (s, e) => { if (!_busy) moreMenu.Show(more, new Point(0, more.Height)); };
             profileRow.Controls.Add(more);
             _multiplayer.Text = "Enable Multiplayer";
@@ -583,10 +585,14 @@ namespace NH5Toolkit
                 if (changes.Count == 0 && plan.InstallersToRun.Count == 0
                     && !plan.Steps.Any(s => s.Kind == StepKind.Keep && !ledger.Files.ContainsKey(s.Path)))
                 {
+                    // no file changes, but the save still switches (two profiles can have the same mods)
+                    if (System.Diagnostics.Process.GetProcessesByName("NASCARHeat5").Length > 0)
+                        throw new IOException("Close NASCAR Heat 5 before switching profiles (its save is switched too).");
+                    await Task.Run(() => SaveSlots.Manager().Deploy(profileName, () => { }));
                     _profiles.Deployed = profileName;
                     _profiles.Save();
                     FillProfiles();
-                    SetBusy(false, $"The game already matches \"{profileName}\". It's now the active profile.");
+                    SetBusy(false, $"The game already matches \"{profileName}\". It's now the active profile, with its own save.");
                     await RefreshPending();
                     OfferLaunch(profileName);
                     return;
@@ -601,6 +607,8 @@ namespace NH5Toolkit
                         ? "• Run installer: " + string.Join(", ", plan.InstallersToRun.Select(m => m.Name)) +
                           " (its window opens: click its Install button, then close it)\n"
                         : "") +
+                    "• Saves: every profile keeps its own save. The save that's live now is parked and \"" + profileName + "\"'s comes back " +
+                    "(a profile used for the first time starts a new save).\n" +
                     (mp ? "• Enable Multiplayer: on (Assembly-CSharp.dll points at the community server)\n" : "") +
                     (plan.Warnings.Count > 0 ? "\nNote:\n• " + string.Join("\n• ", plan.Warnings.Take(8)) + "\n" : "") +
                     "\nEvery file the manager replaces is saved first, so switching a mod off puts it back.\nDeploy now?";
@@ -612,7 +620,9 @@ namespace NH5Toolkit
 
                 var progress = new Progress<(int done, int total, string path)>(p =>
                     _status.Text = p.path.Length > 0 ? $"Applying {p.done + 1} of {p.total}: {Path.GetFileName(p.path)}" : "Finishing...");
-                await Task.Run(() => Deployer.Apply(game, plan, ledger, progress, CancellationToken.None));
+                // saves per profile (old manager's SaveProfileManager): park the outgoing save, bring this profile's back, files in
+                // between; a failure inside puts the outgoing save back (its journal also survives a crash)
+                await Task.Run(() => SaveSlots.Manager().Deploy(profileName, () => Deployer.Apply(game, plan, ledger, progress, CancellationToken.None)));
 
                 // Installer mods last, on top of everything else, one at a time.
                 var ran = new List<string>();
@@ -768,6 +778,15 @@ namespace NH5Toolkit
             if (_busy || _profiles is null) return;
             var cur = _profiles.Current;
             if (AskName("Rename profile", cur.Name) is not { } name || name == cur.Name) return;
+            try
+            {
+                SaveSlots.Manager().RenameProfile(cur.Name, name);   // its parked save (and the save index) follows the name
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Not renamed: " + ex.Message, "Rename profile", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             if (string.Equals(_profiles.Deployed, cur.Name, StringComparison.OrdinalIgnoreCase)) _profiles.Deployed = name;
             cur.Name = name;
             _profiles.Selected = name;
@@ -946,6 +965,23 @@ namespace NH5Toolkit
             {
                 try { Directory.Delete(tmp, true); } catch { }
             }
+        }
+
+        private void ChooseSaveFolder()
+        {
+            using var d = new FolderBrowserDialog
+            {
+                Description = @"Select the game's SAVE folder (normally C:\Users\<you>\NASCAR Heat 5), not the Steam installation.",
+                SelectedPath = SaveSlots.LiveSaveDir, UseDescriptionForTitle = true
+            };
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            if (SaveSlots.Unsafe(d.SelectedPath) is { } why)
+            {
+                MessageBox.Show(this, why, "Game save folder", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            ToolkitConfig.SetPath("saveDir", Path.TrimEndingDirectorySeparator(Path.GetFullPath(d.SelectedPath)));
+            _status.Text = "Game save folder: " + SaveSlots.LiveSaveDir;
         }
 
         private async void PickGameDir()
